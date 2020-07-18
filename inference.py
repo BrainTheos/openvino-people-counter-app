@@ -25,7 +25,7 @@
 import os
 import sys
 import logging as log
-from openvino.inference_engine import IENetwork, IECore
+from openvino.inference_engine import IENetwork, IECore, IEPlugin
 
 
 class Network:
@@ -35,33 +35,94 @@ class Network:
     """
 
     def __init__(self):
-        ### TODO: Initialize any class variables desired ###
+        self.plugin = None
+        self.network = None
+        self.net_plugin= None
+        self.input_blob = None
+        self.output_blob = None
+        self.exec_network = None
+        self.infer_request_handle = None
 
-    def load_model(self):
-        ### TODO: Load the model ###
-        ### TODO: Check for supported layers ###
-        ### TODO: Add any necessary extensions ###
-        ### TODO: Return the loaded inference plugin ###
-        ### Note: You may need to update the function parameters. ###
-        return
+    def load_model(self, model, device, input_size, output_size, num_requests,cpu_extension=None, plugin=None):
+        """Load the model
+        Check for supported layers
+        Add any necessary extensions
+        Return the loaded inference plugin  
+        """
+        
+        model_xml = model
+        model_bin = os.path.splitext(model_xml)[0] + ".bin"
+        
+        # Initialize the plugin
+        if not plugin:
+            log.info("Initializing plugin for {} device...".format(device))
+            self.plugin = IEPlugin(device=device)
+        else:
+            self.plugin = plugin
+        
+        
+        # Read the IR as a IENetwork
+        self.network = IENetwork(model=model_xml, weights=model_bin)
+        
+        # Get the supported layers of the network
+        supported_layers = self.plugin.get_supported_layers(self.network)
+        
+        ### Check for any unsupported layers, and let the user
+        ### know if anything is missing. Exit the program, if so.
+        unsupported_layers = [l for l in self.network.layers.keys() if l not in supported_layers]
+        if len(unsupported_layers) != 0:
+            print("Unsupported layers found: {}".format(unsupported_layers))
+            print("Check whether extensions are available to add to IECore.")
+            #exit(1)
+        
+        # Add cpu extensions to the plugin 
+        if cpu_extension and 'CPU' in device:
+            self.plugin.add_cpu_extension(cpu_extension)
+            
+        if num_requests == 0:
+            # Loads network read from IR to the plugin
+            self.net_plugin = self.plugin.load(network=self.network)
+        else:
+            self.net_plugin = self.plugin.load(network=self.network, num_requests=num_requests)
+        
+        # Set the network inputs and outputs
+        self.input_blob = next(iter(self.network.inputs))
+        self.output_blob = next(iter(self.network.outputs))
+        
+        return self.plugin, self.get_input_shape()
 
     def get_input_shape(self):
-        ### TODO: Return the shape of the input layer ###
-        return
+        ### Return the shape of the input layer ###
+        
+        return self.network.inputs[self.input_blob].shape
+    
+    def performance_counter(self, request_id):
+        """
+            Returns perfomance measure per layer
+        """
+        perf_count = self.net_plugin.requests[request_id].get_perf_counts()
+        return perf_count
 
-    def exec_net(self):
-        ### TODO: Start an asynchronous request ###
-        ### TODO: Return any necessary information ###
-        ### Note: You may need to update the function parameters. ###
-        return
+    def exec_net(self, request_id,image):
+        ### Start an asynchronous request based on the request id of a frame ###
+        ### Return net_plugin ###
+        
+        self.infer_request_handle =self.net_plugin.start_async(request_id=request_id, 
+            inputs={self.input_blob: image})
+        return self.net_plugin
 
-    def wait(self):
+    def wait(self, request_id):
         ### TODO: Wait for the request to be complete. ###
-        ### TODO: Return any necessary information ###
-        ### Note: You may need to update the function parameters. ###
-        return
+        ### TODO: Return the status of a request ###
+        status = self.net_plugin.requests[request_id].wait(-1)
+        return status
 
-    def get_output(self):
+    def get_output(self, request_id, output=None):
         ### TODO: Extract and return the output results
-        ### Note: You may need to update the function parameters. ###
-        return
+        ### based on request_id and output params###
+        if output:
+            result = self.infer_request_handle.outputs[output]
+        else:
+            result = self.net_plugin.requests[request_id].outputs[self.output_blob]
+        
+        return result
